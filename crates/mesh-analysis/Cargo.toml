@@ -1,0 +1,12 @@
+[package]
+name = "mesh-analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Non-mutating topology and geometry diagnostics for triangle meshes"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+nalgebra.workspace = true
+serde.workspace = true

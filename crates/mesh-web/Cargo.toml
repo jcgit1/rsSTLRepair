@@ -1,0 +1,10 @@
+[package]
+name = "mesh-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Compile-only placeholder for the future Axum-based repair web service"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }

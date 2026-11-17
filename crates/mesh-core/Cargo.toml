@@ -1,0 +1,12 @@
+[package]
+name = "mesh-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core non-manifold indexed triangle mesh kernel, IDs, repair profiles, and limits"
+
+[dependencies]
+nalgebra.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,5 @@
+/target/
+Cargo.lock
+*.repaired.stl
+*.repaired.obj
+.DS_Store

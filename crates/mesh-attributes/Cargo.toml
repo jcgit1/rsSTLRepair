@@ -1,0 +1,11 @@
+[package]
+name = "mesh-attributes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Face correspondence, confidence tracking, and categorical/paint attribute preservation"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+serde.workspace = true

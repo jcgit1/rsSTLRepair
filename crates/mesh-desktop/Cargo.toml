@@ -1,0 +1,29 @@
+[package]
+name = "mesh-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Linux-native egui/wgpu desktop GUI for mesh inspection, repair, and export"
+
+[[bin]]
+name = "mesh-repair-gui"
+path = "src/main.rs"
+
+[dependencies]
+bytemuck.workspace = true
+eframe.workspace = true
+egui.workspace = true
+mesh-analysis = { path = "../mesh-analysis" }
+mesh-attributes = { path = "../mesh-attributes" }
+mesh-core = { path = "../mesh-core" }
+mesh-formats = { path = "../mesh-formats" }
+mesh-repair = { path = "../mesh-repair" }
+mesh-validation = { path = "../mesh-validation" }
+nalgebra.workspace = true
+rfd.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

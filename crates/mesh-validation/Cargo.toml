@@ -1,0 +1,19 @@
+[package]
+name = "mesh-validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reimport-honest validation and attribute preservation checks"
+
+[dependencies]
+mesh-analysis = { path = "../mesh-analysis" }
+mesh-attributes = { path = "../mesh-attributes" }
+mesh-core = { path = "../mesh-core" }
+mesh-formats = { path = "../mesh-formats" }
+serde.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+mesh-repair = { path = "../mesh-repair" }
+nalgebra.workspace = true

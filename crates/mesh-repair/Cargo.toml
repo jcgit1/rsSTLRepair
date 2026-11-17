@@ -1,0 +1,18 @@
+[package]
+name = "mesh-repair"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Conservative, standard, and aggressive mesh repair pipelines with face correspondence"
+
+[dependencies]
+mesh-analysis = { path = "../mesh-analysis" }
+mesh-attributes = { path = "../mesh-attributes" }
+mesh-core = { path = "../mesh-core" }
+nalgebra.workspace = true
+rayon.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

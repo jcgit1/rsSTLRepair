@@ -1,0 +1,27 @@
+[package]
+name = "mesh-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command-line interface for analyzing and repairing 3D printing meshes"
+
+[[bin]]
+name = "mesh-repair"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+mesh-analysis = { path = "../mesh-analysis" }
+mesh-attributes = { path = "../mesh-attributes" }
+mesh-core = { path = "../mesh-core" }
+mesh-formats = { path = "../mesh-formats" }
+mesh-repair = { path = "../mesh-repair" }
+mesh-validation = { path = "../mesh-validation" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+nalgebra.workspace = true
+tempfile.workspace = true
