@@ -1,4 +1,6 @@
-//! Safe mesh importers and exporters (STL, OBJ, and planned 3MF guardrails).
+//! Safe mesh importers and exporters (STL, OBJ, and package-preserving 3MF).
+
+pub mod threemf;
 
 use mesh_attributes::AttributeStore;
 use mesh_core::{FaceId, MeshError, ResourceLimits, TriangleMesh};
@@ -7,6 +9,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+pub use threemf::{
+    RepairedThreeMfPart, ThreeMfKind, ThreeMfMeshPart, ThreeMfPackage, transform_point,
+};
 
 /// Recognized mesh file formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,13 +22,14 @@ pub enum FormatKind {
     ThreeMf,
 }
 
-/// Loaded mesh paired with any categorical attributes and import warnings.
+/// Loaded mesh paired with any categorical attributes, optional 3MF package, and import warnings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedModel {
     pub mesh: TriangleMesh,
     pub attributes: AttributeStore,
     pub source_format: FormatKind,
     pub warnings: Vec<String>,
+    pub threemf: Option<ThreeMfPackage>,
 }
 
 /// Load a model from disk according to its extension, enforcing [`ResourceLimits`].
@@ -37,16 +43,100 @@ pub fn load_model(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, M
     match ext.as_str() {
         "stl" => load_stl_path(path, limits),
         "obj" => load_obj_path(path, limits),
-        "3mf" => Err(MeshError::UnsupportedFormat(
-            "3MF package preservation is not yet implemented in this release (Milestone 3); refusing to strip colors or slicer metadata.".to_string(),
-        )),
+        "3mf" => load_threemf_path(path, limits),
         other => Err(MeshError::UnsupportedFormat(format!(
-            "unsupported file extension '.{other}'; supported formats are .stl and .obj"
+            "unsupported file extension '.{other}'; supported formats are .stl, .obj, and .3mf"
         ))),
     }
 }
 
+/// Load a `.3mf` package via [`ThreeMfPackage::load_path`].
+pub fn load_threemf_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let pkg = ThreeMfPackage::load_path(path, limits)?;
+    let (mesh, attributes) = combine_threemf_preview(&pkg);
+    let warnings = pkg.warnings.clone();
+    Ok(LoadedModel {
+        mesh,
+        attributes,
+        source_format: FormatKind::ThreeMf,
+        warnings,
+        threemf: Some(pkg),
+    })
+}
+
+/// Build a combined preview [`TriangleMesh`] and [`AttributeStore`] from a [`ThreeMfPackage`].
+///
+/// For single-object packages with identity transforms, this returns the exact object mesh
+/// and attributes. For multi-object packages, display transforms are applied to the preview
+/// copy only; actual repair and export operate per-part on [`ThreeMfPackage::parts`].
+#[must_use]
+pub fn combine_threemf_preview(pkg: &ThreeMfPackage) -> (TriangleMesh, AttributeStore) {
+    if pkg.parts.len() == 1 {
+        let p = &pkg.parts[0];
+        let is_ident = p.display_transform
+            == [
+                1.0, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ];
+        if is_ident {
+            return (p.mesh.clone(), p.attributes.clone());
+        }
+    }
+
+    let mut verts = Vec::new();
+    let mut faces = Vec::new();
+    let mut attrs = AttributeStore {
+        filament_palette: pkg.filament_palette.clone(),
+        ..Default::default()
+    };
+
+    for part in &pkg.parts {
+        let base_v = verts.len() as u32;
+        for &v in &part.mesh.vertices {
+            verts.push(transform_point(&part.display_transform, v));
+        }
+        for (fi, &[a, b, c]) in part.mesh.faces.iter().enumerate() {
+            faces.push([base_v + a, base_v + b, base_v + c]);
+            let mut fa = part.attributes.faces.get(fi).cloned().unwrap_or_default();
+            if fa.paint.is_none()
+                && fa.threemf_material.is_none()
+                && let Some(ext) = part.attributes.default_extruder
+            {
+                fa.paint = Some(mesh_attributes::PaintAssignment {
+                    attr_name: "paint_color".to_string(),
+                    raw_attribute: String::new(),
+                    decoded_leaf_state: Some(ext),
+                    is_subdivided_tree: false,
+                });
+            }
+            attrs.faces.push(fa);
+            attrs
+                .origins
+                .push(mesh_attributes::FaceOrigin::Identity(FaceId(
+                    (faces.len() - 1) as u32,
+                )));
+            attrs.confidence.push(
+                part.attributes
+                    .confidence
+                    .get(fi)
+                    .copied()
+                    .unwrap_or(mesh_attributes::Confidence::Exact),
+            );
+        }
+        for (k, v) in &part.attributes.threemf_colors {
+            attrs.threemf_colors.entry(k.clone()).or_insert(*v);
+        }
+    }
+
+    (TriangleMesh::from_parts(verts, faces), attrs)
+}
+
 /// Save a mesh and its categorical attributes to a new path according to extension.
+///
+/// For `.3mf` packages, use [`ThreeMfPackage::write_repaired_path`] so unrelated entries and
+/// object hierarchy are preserved instead of flattened.
 pub fn save_model(
     path: &Path,
     mesh: &TriangleMesh,
@@ -68,7 +158,8 @@ pub fn save_model(
             Ok(FormatKind::Obj)
         }
         "3mf" => Err(MeshError::UnsupportedFormat(
-            "3MF export is not yet implemented in this release (Milestone 3).".to_string(),
+            "3MF export must use ThreeMfPackage::write_repaired_path to preserve package entries and painting."
+                .to_string(),
         )),
         other => Err(MeshError::UnsupportedFormat(format!(
             "unsupported export extension '.{other}'; supported formats are .stl and .obj"
@@ -180,6 +271,7 @@ fn parse_binary_stl<R: Read>(
         mesh: TriangleMesh::from_parts(builder.vertices, builder.faces),
         source_format: FormatKind::StlBinary,
         warnings: Vec::new(),
+        threemf: None,
     })
 }
 
@@ -241,6 +333,7 @@ fn parse_ascii_stl(bytes: &[u8], limits: &ResourceLimits) -> Result<LoadedModel,
         mesh: TriangleMesh::from_parts(builder.vertices, builder.faces),
         source_format: FormatKind::StlAscii,
         warnings: Vec::new(),
+        threemf: None,
     })
 }
 
@@ -507,7 +600,7 @@ pub fn load_obj_reader<R: BufRead>(
                     face_attrs.push(mesh_attributes::FaceAttributes {
                         material_id: current_material,
                         group_id: current_group,
-                        paint: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -526,6 +619,7 @@ pub fn load_obj_reader<R: BufRead>(
         attributes: attrs,
         source_format: FormatKind::Obj,
         warnings,
+        threemf: None,
     })
 }
 
@@ -699,9 +793,32 @@ f 1 2 3
     }
 
     #[test]
-    fn refuses_3mf_instead_of_stripping() {
-        let err = load_model(Path::new("painted.3mf"), &ResourceLimits::default())
-            .expect_err("must refuse 3mf");
-        assert!(matches!(err, MeshError::UnsupportedFormat(_)));
+    fn refuses_sliced_or_traversal_3mf_and_preserves_bambu_paint() {
+        // Test ZIP path traversal rejection
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("../evil.model", opts).expect("start");
+            std::io::Write::write_all(&mut zw, b"bad").expect("write");
+            zw.finish().expect("finish");
+        }
+        let err = ThreeMfPackage::load_slice(&buf.into_inner(), &ResourceLimits::default())
+            .expect_err("must reject traversal");
+        assert!(matches!(err, MeshError::InvalidFormat(_)));
+
+        // Test sliced G-code 3MF rejection
+        let mut gbuf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut gbuf);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("Metadata/plate_1.gcode", opts)
+                .expect("start");
+            std::io::Write::write_all(&mut zw, b"G28\n").expect("write");
+            zw.finish().expect("finish");
+        }
+        let gerr = ThreeMfPackage::load_slice(&gbuf.into_inner(), &ResourceLimits::default())
+            .expect_err("must reject sliced gcode 3mf");
+        assert!(matches!(gerr, MeshError::UnsupportedFormat(_)));
     }
 }

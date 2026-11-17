@@ -89,7 +89,9 @@ impl CpuViewportGeometry {
             };
 
             let color = if uncertain_faces.contains(&fi) {
-                [0.88, 0.72, 0.30]
+                [0.92, 0.74, 0.24]
+            } else if let Some(rgb) = attrs.and_then(|st| st.display_color_for_face(fi)) {
+                rgb
             } else if let Some(mat_id) = attrs.and_then(|st| st.faces.get(fi)?.material_id) {
                 categorical_material_color(mat_id)
             } else {

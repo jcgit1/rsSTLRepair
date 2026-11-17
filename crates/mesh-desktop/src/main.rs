@@ -124,9 +124,14 @@ impl DesktopApp {
     }
 
     fn ensure_before_geometry(&mut self) -> Option<Arc<CpuViewportGeometry>> {
-        let mesh = self.vm.before_mesh.as_ref()?;
+        let (Some(mesh), attrs, report) = ({
+            let (m, a, r) = self.vm.active_before_view();
+            (m, a, r)
+        }) else {
+            return None;
+        };
         let key = (
-            self.vm.before_revision,
+            self.vm.before_revision ^ self.vm.selected_part.map_or(0, |i| ((i as u64) + 1) << 40),
             self.vm.show_defects,
             self.vm.show_wireframe,
             self.vm.show_grid,
@@ -140,8 +145,8 @@ impl DesktopApp {
         }
         let built = Arc::new(CpuViewportGeometry::build(
             mesh,
-            self.vm.before_attrs.as_ref(),
-            self.vm.before_report.as_ref(),
+            attrs,
+            report,
             self.vm.show_defects,
             self.vm.show_wireframe,
             self.vm.show_grid,
@@ -152,9 +157,14 @@ impl DesktopApp {
     }
 
     fn ensure_after_geometry(&mut self) -> Option<Arc<CpuViewportGeometry>> {
-        let mesh = self.vm.after_mesh.as_ref()?;
+        let (Some(mesh), attrs, report) = ({
+            let (m, a, r) = self.vm.active_after_view();
+            (m, a, r)
+        }) else {
+            return None;
+        };
         let key = (
-            self.vm.after_revision,
+            self.vm.after_revision ^ self.vm.selected_part.map_or(0, |i| ((i as u64) + 1) << 40),
             self.vm.show_defects,
             self.vm.show_wireframe,
             self.vm.show_grid,
@@ -166,10 +176,9 @@ impl DesktopApp {
         {
             return self.cached_after.clone();
         }
-        let report = self.vm.repair_result.as_ref().map(|r| &r.report.after);
         let built = Arc::new(CpuViewportGeometry::build(
             mesh,
-            self.vm.after_attrs.as_ref(),
+            attrs,
             report,
             self.vm.show_defects,
             self.vm.show_wireframe,
@@ -197,7 +206,7 @@ impl DesktopApp {
         ui.horizontal_wrapped(|ui| {
             if ui.button("Open...").clicked()
                 && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Supported Meshes", &["stl", "obj"])
+                    .add_filter("Supported Meshes", &["3mf", "stl", "obj"])
                     .add_filter("All Files", &["*"])
                     .pick_file()
             {
@@ -257,9 +266,13 @@ impl DesktopApp {
                 .add_enabled(can_export, egui::Button::new("Export..."))
                 .clicked()
             {
-                let mut dialog = rfd::FileDialog::new()
-                    .add_filter("STL Binary", &["stl"])
-                    .add_filter("Wavefront OBJ", &["obj"]);
+                let mut dialog = if self.vm.threemf_pkg.is_some() {
+                    rfd::FileDialog::new().add_filter("3MF Package", &["3mf"])
+                } else {
+                    rfd::FileDialog::new()
+                        .add_filter("STL Binary", &["stl"])
+                        .add_filter("Wavefront OBJ", &["obj"])
+                };
                 if let Some(suggested) = self.vm.suggested_export_path() {
                     if let Some(parent) = suggested.parent() {
                         dialog = dialog.set_directory(parent);
@@ -388,7 +401,7 @@ impl DesktopApp {
                     r.non_manifold_edges.len(),
                     r.winding_conflict_edges.len()
                 ),
-                None => "Drop .stl or .obj to inspect".to_string(),
+                None => "Drop .3mf, .stl, or .obj to inspect".to_string(),
             },
             ViewportSlot::After => match &self.vm.repair_result {
                 Some(res) if res.report.was_noop => "NO-OP (already clean)".to_string(),
@@ -425,12 +438,65 @@ impl DesktopApp {
         }
     }
 
-    fn draw_inspector(&self, ui: &mut egui::Ui) {
+    fn draw_inspector(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
+            if let Some(pkg) = &self.vm.threemf_pkg {
+                ui.label(RichText::new("3MF PACKAGE").strong());
+                ui.separator();
+                ui.label(
+                    RichText::new(format!(
+                        "{:?} | {} object(s) | unit: {}",
+                        pkg.kind,
+                        pkg.parts.len(),
+                        pkg.unit
+                    ))
+                    .small()
+                    .font(egui::FontId::new(11.5, FontFamily::Monospace)),
+                );
+                if !pkg.filament_palette.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Filaments:").small().color(TEXT_MUTED));
+                        for &[r, g, b] in &pkg.filament_palette {
+                            let c = Color32::from_rgb(
+                                (r * 255.0) as u8,
+                                (g * 255.0) as u8,
+                                (b * 255.0) as u8,
+                            );
+                            let (swatch, _) =
+                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            ui.painter().rect_filled(swatch, CornerRadius::same(1), c);
+                            ui.painter().rect_stroke(
+                                swatch,
+                                CornerRadius::same(1),
+                                Stroke::new(1.0, BORDER),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    });
+                }
+                if pkg.parts.len() > 1 {
+                    let mut sel = self.vm.selected_part;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Object:").small().color(TEXT_MUTED));
+                        ui.selectable_value(&mut sel, None, "All");
+                        for (idx, p) in pkg.parts.iter().enumerate() {
+                            let lbl = p.object_name.as_deref().unwrap_or(&p.object_id);
+                            ui.selectable_value(&mut sel, Some(idx), lbl);
+                        }
+                    });
+                    if sel != self.vm.selected_part {
+                        self.vm.selected_part = sel;
+                    }
+                }
+                ui.add_space(8.0);
+            }
+
             ui.label(RichText::new("MODEL METRICS").strong());
             ui.separator();
 
-            if let Some(before) = &self.vm.before_report {
+            let before_rep = self.vm.active_before_view().2.cloned();
+            let after_rep = self.vm.active_after_view().2.cloned();
+            if let Some(before) = &before_rep {
                 if let Some(bbox) = before.bounding_box {
                     let s = bbox.size();
                     ui.label(
@@ -449,7 +515,7 @@ impl DesktopApp {
                 );
                 ui.add_space(6.0);
 
-                let after = self.vm.repair_result.as_ref().map(|r| &r.report.after);
+                let after = after_rep.as_ref();
                 egui::Grid::new("metrics_grid")
                     .num_columns(3)
                     .spacing([14.0, 4.0])
@@ -603,8 +669,8 @@ impl DesktopApp {
             ui.separator();
             ui.label(
                 RichText::new(
-                    "Current: STL (ASCII/binary), OBJ (groups/usemtl), Phase 1 repairs.\n\
-                     Deferred: paint-safe 3MF (Milestone 3), self-intersections, remeshing, STEP/PLY/glTF.",
+                    "Current: 3MF (paint_color & Bambu/Orca package preservation), STL, OBJ, Phase 1 repairs.\n\
+                     Deferred: self-intersections, remeshing, AMF, PLY, glTF, STEP, SVG.",
                 )
                 .small()
                 .color(TEXT_MUTED),
@@ -712,7 +778,7 @@ impl eframe::App for DesktopApp {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop .stl or .obj file to load",
+                "Drop .3mf, .stl, or .obj file to load",
                 egui::FontId::proportional(20.0),
                 TEXT_PRIMARY,
             );

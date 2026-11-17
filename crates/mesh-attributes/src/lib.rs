@@ -2,6 +2,7 @@
 
 use mesh_core::FaceId;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Provenance of a face produced by a repair operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,13 +30,16 @@ pub enum Confidence {
 
 /// Bambu Studio / OrcaSlicer / PrusaSlicer per-triangle painting assignment.
 ///
-/// `paint_color` (and `slic3rpe:mmu_segmentation`) uses a TriangleSelector
-/// nibble bitstream encoded as hexadecimal read from right to left:
+/// `paint_color` (and `slic3rpe:mmu_segmentation`, `paint_supports`, `paint_seam`,
+/// `paint_fuzzy_skin`) uses a TriangleSelector nibble bitstream encoded as hexadecimal
+/// read from right to left:
 /// - low 2 bits == 0: leaf node, state = high 2 bits (`s2 < 3`), or `3 + next_nibble`
 ///   when `s2 == 3` (escape marker, e.g. `"0C"` -> state 3, `"1C"` -> state 4)
 /// - low 2 bits != 0: subdivided triangle split tree
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PaintAssignment {
+    /// Original XML attribute key (e.g. `"paint_color"` or `"slic3rpe:mmu_segmentation"`).
+    pub attr_name: String,
     /// Raw hex string from the 3MF attribute, kept verbatim for unchanged faces.
     pub raw_attribute: String,
     /// Decoded leaf filament state (`0` = default extruder, `s >= 1` = filament slot `s - 1`),
@@ -46,9 +50,16 @@ pub struct PaintAssignment {
 }
 
 impl PaintAssignment {
-    /// Decode a Bambu/Orca `paint_color` or Prusa `mmu_segmentation` hex string.
+    /// Decode a Bambu/Orca `paint_color` hex string using `"paint_color"` as the key.
     #[must_use]
     pub fn from_hex(raw: impl Into<String>) -> Self {
+        Self::from_key_hex("paint_color", raw)
+    }
+
+    /// Decode a TriangleSelector hex string while preserving its XML attribute key.
+    #[must_use]
+    pub fn from_key_hex(attr_name: impl Into<String>, raw: impl Into<String>) -> Self {
+        let attr_name = attr_name.into();
         let raw_attribute = raw.into();
         let trimmed = raw_attribute.trim();
         let mut nibbles = trimmed
@@ -88,10 +99,30 @@ impl PaintAssignment {
         };
 
         Self {
+            attr_name,
             raw_attribute,
             decoded_leaf_state,
             is_subdivided_tree,
         }
+    }
+}
+
+/// Standard 3MF per-triangle material/property tuple (`pid`, `p1`, optional `p2`, `p3`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ThreeMfTriangleMaterial {
+    pub pid: String,
+    pub p1: String,
+    pub p2: Option<String>,
+    pub p3: Option<String>,
+}
+
+impl ThreeMfTriangleMaterial {
+    /// True when all triangle corners reference the same property index (safe to inherit onto caps).
+    #[must_use]
+    pub fn is_uniform(&self) -> bool {
+        let p2_ok = self.p2.as_ref().is_none_or(|p| p == &self.p1);
+        let p3_ok = self.p3.as_ref().is_none_or(|p| p == &self.p1);
+        p2_ok && p3_ok
     }
 }
 
@@ -101,6 +132,10 @@ pub struct FaceAttributes {
     pub material_id: Option<u32>,
     pub group_id: Option<u32>,
     pub paint: Option<PaintAssignment>,
+    pub paint_supports: Option<PaintAssignment>,
+    pub paint_seam: Option<PaintAssignment>,
+    pub paint_fuzzy_skin: Option<PaintAssignment>,
+    pub threemf_material: Option<ThreeMfTriangleMaterial>,
 }
 
 /// Summary of attribute preservation across a topology-changing repair.
@@ -117,6 +152,12 @@ pub struct AttributeTransferSummary {
 pub struct AttributeStore {
     pub material_names: Vec<String>,
     pub group_names: Vec<String>,
+    /// Resolved sRGB filament palette (`0..1` per channel) from 3MF project settings.
+    pub filament_palette: Vec<[f32; 3]>,
+    /// Default 1-based extruder slot for this object/part (`None` if unspecified).
+    pub default_extruder: Option<u32>,
+    /// Resolved display colors keyed by `"pid:pindex"` (from `<basematerials>` / `<m:colorgroup>`).
+    pub threemf_colors: BTreeMap<String, [f32; 3]>,
     pub faces: Vec<FaceAttributes>,
     pub origins: Vec<FaceOrigin>,
     pub confidence: Vec<Confidence>,
@@ -129,6 +170,9 @@ impl AttributeStore {
         Self {
             material_names: Vec::new(),
             group_names: Vec::new(),
+            filament_palette: Vec::new(),
+            default_extruder: None,
+            threemf_colors: BTreeMap::new(),
             faces: vec![FaceAttributes::default(); face_count],
             origins: (0..face_count)
                 .map(|i| FaceOrigin::Identity(FaceId(i as u32)))
@@ -157,6 +201,41 @@ impl AttributeStore {
         id
     }
 
+    /// Resolve a display color `[0..1; 3]` for face `fi` if filament palette or 3MF colors exist.
+    #[must_use]
+    pub fn display_color_for_face(&self, fi: usize) -> Option<[f32; 3]> {
+        let fa = self.faces.get(fi)?;
+        if let Some(paint) = &fa.paint {
+            if let Some(state) = paint.decoded_leaf_state {
+                let slot_idx = if state == 0 {
+                    self.default_extruder.and_then(|e| e.checked_sub(1))
+                } else {
+                    Some(state - 1)
+                };
+                if let Some(idx) = slot_idx
+                    && let Some(&rgb) = self.filament_palette.get(idx as usize)
+                {
+                    return Some(rgb);
+                }
+            } else if paint.is_subdivided_tree {
+                return Some([0.82, 0.68, 0.42]);
+            }
+        }
+        if let Some(tm) = &fa.threemf_material {
+            let key = format!("{}:{}", tm.pid, tm.p1);
+            if let Some(&rgb) = self.threemf_colors.get(&key) {
+                return Some(rgb);
+            }
+        }
+        if let Some(ext) = self.default_extruder
+            && let Some(idx) = ext.checked_sub(1)
+            && let Some(&rgb) = self.filament_palette.get(idx as usize)
+        {
+            return Some(rgb);
+        }
+        None
+    }
+
     /// Transfer categorical attributes across a repair operation using its face-origin map.
     ///
     /// Categorical filament/material IDs are never interpolated or blended as RGB.
@@ -167,6 +246,9 @@ impl AttributeStore {
         let mut next = Self {
             material_names: self.material_names.clone(),
             group_names: self.group_names.clone(),
+            filament_palette: self.filament_palette.clone(),
+            default_extruder: self.default_extruder,
+            threemf_colors: self.threemf_colors.clone(),
             faces: Vec::with_capacity(new_origins.len()),
             origins: new_origins.to_vec(),
             confidence: Vec::with_capacity(new_origins.len()),
@@ -258,14 +340,25 @@ impl AttributeStore {
         let material_agrees = samples.iter().all(|s| s.material_id == first.material_id);
         let group_agrees = samples.iter().all(|s| s.group_id == first.group_id);
 
-        let paint_has_split = samples
-            .iter()
-            .any(|s| s.paint.as_ref().is_some_and(|p| p.is_subdivided_tree));
-        let paint_agrees = !paint_has_split
-            && samples.iter().all(|s| {
-                s.paint.as_ref().and_then(|p| p.decoded_leaf_state)
-                    == first.paint.as_ref().and_then(|p| p.decoded_leaf_state)
-            });
+        let (paint, paint_agrees) = resolve_paint_channel(samples.iter().map(|s| s.paint.as_ref()));
+        let (paint_supports, supports_agrees) =
+            resolve_paint_channel(samples.iter().map(|s| s.paint_supports.as_ref()));
+        let (paint_seam, seam_agrees) =
+            resolve_paint_channel(samples.iter().map(|s| s.paint_seam.as_ref()));
+        let (paint_fuzzy_skin, fuzzy_agrees) =
+            resolve_paint_channel(samples.iter().map(|s| s.paint_fuzzy_skin.as_ref()));
+
+        let tm_agrees = match &first.threemf_material {
+            None => samples.iter().all(|s| s.threemf_material.is_none()),
+            Some(tm0) => {
+                tm0.is_uniform()
+                    && samples.iter().all(|s| {
+                        s.threemf_material.as_ref().is_some_and(|tm| {
+                            tm.is_uniform() && tm.pid == tm0.pid && tm.p1 == tm0.p1
+                        })
+                    })
+            }
+        };
 
         let attrs = FaceAttributes {
             material_id: if material_agrees {
@@ -274,15 +367,67 @@ impl AttributeStore {
                 None
             },
             group_id: if group_agrees { first.group_id } else { None },
-            paint: if paint_agrees {
-                first.paint.clone()
+            paint,
+            paint_supports,
+            paint_seam,
+            paint_fuzzy_skin,
+            threemf_material: if tm_agrees {
+                first.threemf_material.clone().map(|mut tm| {
+                    tm.p2 = None;
+                    tm.p3 = None;
+                    tm
+                })
             } else {
                 None
             },
         };
-        let unanimous = material_agrees && group_agrees && paint_agrees;
+        let unanimous = material_agrees
+            && group_agrees
+            && paint_agrees
+            && supports_agrees
+            && seam_agrees
+            && fuzzy_agrees
+            && tm_agrees;
         (attrs, unanimous)
     }
+}
+
+fn resolve_paint_channel<'a>(
+    mut iter: impl Iterator<Item = Option<&'a PaintAssignment>>,
+) -> (Option<PaintAssignment>, bool) {
+    let Some(first) = iter.next() else {
+        return (None, true);
+    };
+    let rest: Vec<Option<&'a PaintAssignment>> = iter.collect();
+    let has_split = first.is_some_and(|p| p.is_subdivided_tree)
+        || rest
+            .iter()
+            .any(|opt| opt.is_some_and(|p| p.is_subdivided_tree));
+    if has_split {
+        return (None, false);
+    }
+    let first_state = first.and_then(|p| p.decoded_leaf_state);
+    let agrees = rest
+        .iter()
+        .all(|opt| opt.and_then(|p| p.decoded_leaf_state) == first_state);
+    if agrees {
+        (first.cloned(), true)
+    } else {
+        (None, false)
+    }
+}
+
+/// Parse `#RRGGBB` or `#RRGGBBAA` hex color into `[r, g, b]` floats in `0.0..=1.0`.
+#[must_use]
+pub fn parse_srgb_hex(hex: &str) -> Option<[f32; 3]> {
+    let h = hex.trim().strip_prefix('#').unwrap_or(hex.trim());
+    if h.len() != 6 && h.len() != 8 {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
 }
 
 /// Compose two sequential face-origin maps `(step1_origins, step2_origins)` back to input faces.
@@ -394,5 +539,19 @@ mod tests {
         assert_eq!(summary.uncertain_count, 0);
         assert_eq!(next.confidence[0], Confidence::Inherited);
         assert_eq!(next.faces[0].paint, Some(paint));
+    }
+
+    #[test]
+    fn parses_srgb_palette_and_resolves_paint_color() {
+        let mut store = AttributeStore::new_for_mesh(2);
+        store.filament_palette = vec![
+            parse_srgb_hex("#FF0000FF").expect("red"),
+            parse_srgb_hex("#00FF00").expect("green"),
+        ];
+        store.default_extruder = Some(1);
+        store.faces[0].paint = Some(PaintAssignment::from_hex("8")); // slot 2 (index 1)
+
+        assert_eq!(store.display_color_for_face(0), Some([0.0, 1.0, 0.0]));
+        assert_eq!(store.display_color_for_face(1), Some([1.0, 0.0, 0.0]));
     }
 }

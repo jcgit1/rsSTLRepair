@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use mesh_analysis::analyze;
+use mesh_analysis::{DiagnosticReport, analyze};
 use mesh_core::{RepairProfile, ResourceLimits};
-use mesh_formats::{load_model, save_model};
-use mesh_repair::repair_mesh;
-use mesh_validation::{RoundtripRequest, verify_roundtrip};
+use mesh_formats::{RepairedThreeMfPart, ThreeMfKind, ThreeMfPackage, load_model, save_model};
+use mesh_repair::{RepairResult, repair_mesh};
+use mesh_validation::{RoundtripRequest, verify_roundtrip, verify_threemf_roundtrip};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "mesh-repair",
     version,
-    about = "Diagnose and repair 3D printing meshes while tracking face correspondence"
+    about = "Diagnose and repair 3D printing meshes while preserving 3MF painting and face correspondence"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -37,7 +37,7 @@ impl From<ProfileArg> for RepairProfile {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Inspect a mesh file without modifying anything on disk.
+    /// Inspect a mesh file (.3mf, .stl, .obj) without modifying anything on disk.
     Analyze {
         input: PathBuf,
         #[arg(long)]
@@ -73,14 +73,69 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Analyze { input, json } => {
             let loaded = load_model(&input, &limits)?;
-            let report = analyze(&loaded.mesh);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+            if let Some(pkg) = &loaded.threemf {
+                let part_reports: Vec<DiagnosticReport> =
+                    pkg.parts.iter().map(|p| analyze(&p.mesh)).collect();
+                if json {
+                    let payload = serde_json::json!({
+                        "file": input,
+                        "kind": format!("{:?}", pkg.kind),
+                        "unit": pkg.unit,
+                        "filament_slots": pkg.filament_palette.len(),
+                        "parts": pkg.parts.iter().zip(part_reports.iter()).map(|(p, r)| {
+                            serde_json::json!({
+                                "archive_path": p.archive_path,
+                                "object_id": p.object_id,
+                                "object_name": p.object_name,
+                                "painted_faces": p.attributes.faces.iter().filter(|f| f.paint.is_some()).count(),
+                                "report": r,
+                            })
+                        }).collect::<Vec<_>>(),
+                        "warnings": loaded.warnings,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    println!(
+                        "File: {} (3MF {:?}, unit: {})",
+                        input.display(),
+                        pkg.kind,
+                        pkg.unit
+                    );
+                    println!(
+                        "Objects: {} | Filament palette colors: {}",
+                        pkg.parts.len(),
+                        pkg.filament_palette.len()
+                    );
+                    for (p, r) in pkg.parts.iter().zip(part_reports.iter()) {
+                        let painted = p
+                            .attributes
+                            .faces
+                            .iter()
+                            .filter(|f| f.paint.is_some())
+                            .count();
+                        println!(
+                            "\n-- Object {} ({}) [{} | {} painted face(s)] --",
+                            p.object_id,
+                            p.object_name.as_deref().unwrap_or("unnamed"),
+                            p.archive_path,
+                            painted
+                        );
+                        println!("{}", r.summary_text());
+                    }
+                    for w in &loaded.warnings {
+                        println!("  [WARN] {w}");
+                    }
+                }
             } else {
-                println!("File: {}", input.display());
-                println!("{}", report.summary_text());
-                for w in &loaded.warnings {
-                    println!("  [WARN] {w}");
+                let report = analyze(&loaded.mesh);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("File: {}", input.display());
+                    println!("{}", report.summary_text());
+                    for w in &loaded.warnings {
+                        println!("  [WARN] {w}");
+                    }
                 }
             }
         }
@@ -100,6 +155,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let loaded = load_model(&input, &limits)?;
+            if let Some(pkg) = &loaded.threemf {
+                repair_threemf_cli(pkg, &input, &out_path, profile, json, &limits)?;
+                return Ok(());
+            }
+
             let result = repair_mesh(&loaded.mesh, &loaded.attributes, profile, None)?;
 
             let ext = out_path
@@ -164,6 +224,122 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn repair_threemf_cli(
+    pkg: &ThreeMfPackage,
+    input: &Path,
+    out_path: &Path,
+    profile: RepairProfile,
+    json: bool,
+    limits: &ResourceLimits,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let out_ext = out_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if out_ext != "3mf" {
+        return Err(
+            "refusing to export a 3MF package to a non-3MF format (would strip colors/metadata); specify a .3mf output path"
+                .into(),
+        );
+    }
+
+    let mut part_results: Vec<RepairResult> = Vec::with_capacity(pkg.parts.len());
+    for part in &pkg.parts {
+        let res = repair_mesh(&part.mesh, &part.attributes, profile, None)?;
+        part_results.push(res);
+    }
+
+    let repaired_refs: Vec<RepairedThreeMfPart<'_>> = pkg
+        .parts
+        .iter()
+        .zip(part_results.iter())
+        .map(|(orig, res)| RepairedThreeMfPart {
+            archive_path: &orig.archive_path,
+            object_id: &orig.object_id,
+            was_noop: res.report.was_noop,
+            mesh: &res.mesh,
+            attributes: &res.attributes,
+        })
+        .collect();
+
+    let expected_reports: Vec<DiagnosticReport> = part_results
+        .iter()
+        .map(|r| r.report.after.clone())
+        .collect();
+
+    let validation =
+        verify_threemf_roundtrip(pkg, &repaired_refs, &expected_reports, profile, limits)?;
+
+    if !validation.passed {
+        return Err(format!(
+            "post-repair 3MF reimport validation failed: {}",
+            validation.errors.join("; ")
+        )
+        .into());
+    }
+
+    pkg.write_repaired_path(out_path, &repaired_refs)?;
+
+    if json {
+        let payload = serde_json::json!({
+            "input": input,
+            "output": out_path,
+            "kind": match pkg.kind {
+                ThreeMfKind::GeometryModel => "GeometryModel",
+                ThreeMfKind::SlicerProject => "SlicerProject",
+            },
+            "profile": profile.label(),
+            "parts": pkg.parts.iter().zip(part_results.iter()).map(|(p, r)| {
+                serde_json::json!({
+                    "object_id": p.object_id,
+                    "object_name": p.object_name,
+                    "report": r.report,
+                })
+            }).collect::<Vec<_>>(),
+            "validation": validation,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("Input:   {} (3MF {:?})", input.display(), pkg.kind);
+        println!("Output:  {}", out_path.display());
+        println!("Profile: {}", profile.label());
+        for (p, r) in pkg.parts.iter().zip(part_results.iter()) {
+            println!(
+                "\n-- Object {} ({}) --",
+                p.object_id,
+                p.object_name.as_deref().unwrap_or("unnamed")
+            );
+            if r.report.was_noop {
+                println!("  No-op: clean geometry & original XML preserved unchanged.");
+            } else {
+                for s in &r.report.kept_steps {
+                    println!(
+                        "  [KEPT] {} ({} -> {} faces): {}",
+                        s.name, s.faces_before, s.faces_after, s.detail
+                    );
+                }
+                for s in &r.report.rejected_steps {
+                    println!("  [REJECTED] {}: {}", s.name, s.detail);
+                }
+            }
+            let a = &r.report.attribute_summary;
+            println!(
+                "  Attributes: {} exact, {} inherited, {} uncertain",
+                a.exact_count, a.inherited_count, a.uncertain_count
+            );
+            for w in &r.report.warnings {
+                println!("  [WARN] {w}");
+            }
+            for n in &r.report.unresolved_notes {
+                println!("  [NOTE] {n}");
+            }
+        }
+        println!("\nReimport validation: PASSED");
     }
     Ok(())
 }
