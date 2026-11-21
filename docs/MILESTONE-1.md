@@ -19,6 +19,8 @@ Established the `rsSTLRepair` Cargo workspace (`MIT OR Apache-2.0`), implemented
 
 ## What Is Deferred (Not Claimed Complete)
 
+This list is the Milestone 1 snapshot. 3MF package editing shipped in 0.2.0. Phase 2 geometry, PLY/AMF/glTF, and the localhost repair service shipped in 0.3.0. Controlled remeshing, STEP, and SVG are still open.
+
 - Color-safe `.3mf` package editing and Bambu Studio / OrcaSlicer `paint_color` roundtrip (Milestone 3).
 - Self-intersection detection/resolution, T-junction stitching, thin-wall analysis, and controlled remeshing (Phase 2).
 - AMF, PLY, GLB/glTF, STEP, and SVG adapters (Milestone 5).

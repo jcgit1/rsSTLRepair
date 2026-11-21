@@ -93,7 +93,8 @@ impl AppViewModel {
             show_grid: true,
             camera: OrbitCamera::default(),
             banner_error: None,
-            status_line: "Drop a .3mf, .stl, or .obj file, or click Open.".to_string(),
+            status_line: "Drop a .3mf, .stl, .obj, .ply, .amf, .gltf, or .glb file, or click Open."
+                .to_string(),
             before_revision: 0,
             after_revision: 0,
             repair_in_flight: false,

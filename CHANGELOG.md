@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0] - 2026-11-20
+
+### Added
+- Phase 2 geometry: `parry3d` broadphase self-intersection, T-junction, and thin-wall scans; Standard stitching and crossing splits; Aggressive union of overlapping closed shells. Thin walls are reported and not deleted.
+- Uniform TriangleSelector paint trees replay as a fresh leaf after a geometric split. Mixed or truncated trees are cleared and marked `Uncertain`.
+- PLY (ASCII write, ASCII and binary little-endian read), millimeter AMF, and one-mesh glTF/GLB loaders and writers. Categorical `material_id` is preserved. Parser fuzz rejects panics on random bytes.
+- Local Axum service `mesh-repair-web` (`GET /health`, `POST /api/repair`) with a 64 MiB upload cap, two concurrent repairs, blocking execution, and reimport validation before the response.
+
 ## [0.2.0] - 2026-11-17
 
 ### Added

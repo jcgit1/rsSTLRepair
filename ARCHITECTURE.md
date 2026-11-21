@@ -11,13 +11,13 @@
 
 - `crates/mesh-core`: `TriangleMesh`, `VertexId`, `FaceId`, `EdgeKey`, `RepairProfile`, `BoundingBox`, `ResourceLimits`, `MeshError`.
 - `crates/mesh-attributes`: `AttributeStore`, `FaceOrigin`, `Confidence`, `PaintAssignment` (TriangleSelector nibble decoder), `compose_origins`.
-- `crates/mesh-analysis`: non-mutating `analyze(&TriangleMesh) -> DiagnosticReport`.
-- `crates/mesh-formats`: STL (ASCII/binary) and OBJ (groups/materials) loaders & writers, resource caps, `.3mf` refusal guard.
+- `crates/mesh-analysis`: non-mutating `analyze(&TriangleMesh) -> DiagnosticReport`, including self-intersections, T-junctions, and thin walls.
+- `crates/mesh-formats`: STL, OBJ, PLY, AMF, glTF/GLB, and package-preserving 3MF. `.3mf` export goes through `ThreeMfPackage`, not `save_model`.
 - `crates/mesh-repair`: `RepairOp` trait, `repair_mesh` pipeline, adopt-or-reject policy, cancellation support.
 - `crates/mesh-validation`: `verify_roundtrip` post-repair export/reimport checks.
 - `crates/mesh-cli`: `mesh-repair` CLI (`analyze`, `repair`).
 - `crates/mesh-desktop`: `mesh-repair-gui` (`eframe` + `wgpu` 3D viewports, headless-tested `AppViewModel`).
-- `crates/mesh-web`: compile-only stub for the future Axum web service.
+- `crates/mesh-web`: localhost Axum service `mesh-repair-web`. Geometry crates do not depend on Axum.
 
 ## Planned 3MF Package Preservation Strategy (Milestone 3)
 

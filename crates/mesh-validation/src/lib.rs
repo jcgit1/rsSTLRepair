@@ -77,10 +77,13 @@ pub fn verify_roundtrip(req: RoundtripRequest<'_>) -> Result<ValidationResult, M
         _ => None,
     };
 
-    // Binary STL quantizes coordinates to f32 (~1e-6 * magnitude), while OBJ writes f64.
+    // Binary STL and glTF/GLB quantize coordinates to f32. ASCII PLY, AMF, and OBJ stay at full precision.
     let drift_tol = match (format, profile) {
-        (FormatKind::StlBinary, RepairProfile::Conservative) => 1e-4,
-        (FormatKind::StlBinary, _) => 5e-4,
+        (
+            FormatKind::StlBinary | FormatKind::Gltf | FormatKind::Glb,
+            RepairProfile::Conservative,
+        ) => 1e-4,
+        (FormatKind::StlBinary | FormatKind::Gltf | FormatKind::Glb, _) => 5e-4,
         (_, RepairProfile::Conservative) => 1e-9,
         (_, _) => 5e-4,
     };

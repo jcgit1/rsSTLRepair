@@ -18,8 +18,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## Next Slice (Phase 2 Geometry & Reliability)
+## Next Slice
 
-1. Integrate `parry3d` (`Apache-2.0`) in `mesh-analysis` / `mesh-repair` for BVH-accelerated self-intersection detection and reporting.
-2. Add split-tree replay (`PaintAssignment::is_subdivided_tree`) for triangles subdivided during mesh repair.
-3. Expand format adapters (`PLY`, `AMF`, `GLB/glTF`) and fuzz targets for parsers.
+Phase 2 geometry, PLY/AMF/glTF, and the localhost repair service shipped in 0.3.0. Still open:
+
+1. Controlled remeshing that warns when face correspondence becomes spatial.
+2. STEP and SVG adapters.
+3. Large-mesh benchmarks and slicer compatibility checks beyond the current fixtures.

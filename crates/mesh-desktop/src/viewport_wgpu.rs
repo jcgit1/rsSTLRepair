@@ -147,6 +147,22 @@ impl CpuViewportGeometry {
             for &ek in &rep.winding_conflict_edges {
                 push_edge(&mut line_vertices, ek, [0.85, 0.38, 0.78]); // magenta
             }
+            for hit in &rep.self_intersections {
+                for face in [hit.face_a, hit.face_b] {
+                    if let Some(&[a, b, c]) = mesh.faces.get(face.0 as usize) {
+                        for edge in [
+                            mesh_core::EdgeKey::new(a, b),
+                            mesh_core::EdgeKey::new(b, c),
+                            mesh_core::EdgeKey::new(c, a),
+                        ] {
+                            push_edge(&mut line_vertices, edge, [0.25, 0.85, 0.95]);
+                        }
+                    }
+                }
+            }
+            for junction in &rep.t_junctions {
+                push_edge(&mut line_vertices, junction.edge, [0.35, 0.9, 0.45]);
+            }
         }
 
         if show_grid && let Some(bbox) = mesh.bounding_box() {

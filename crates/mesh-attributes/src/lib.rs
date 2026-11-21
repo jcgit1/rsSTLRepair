@@ -105,6 +105,104 @@ impl PaintAssignment {
             is_subdivided_tree,
         }
     }
+
+    /// Encode one unsplit TriangleSelector leaf. State `0` is the default extruder.
+    #[must_use]
+    pub fn leaf(attr_name: impl Into<String>, state: u32) -> Self {
+        let nibbles = encode_leaf_nibbles(state);
+        Self::from_key_hex(attr_name, hex_from_bitstream(&nibbles))
+    }
+
+    /// Leaf state shared by every leaf of this assignment.
+    ///
+    /// A subdivided tree returns that state only when every child leaf agrees.
+    /// Mixed trees and truncated bitstreams return `None` so repair can mark the
+    /// face [`Confidence::Uncertain`] instead of copying the parent hex onto a fragment.
+    #[must_use]
+    pub fn uniform_leaf_state(&self) -> Option<u32> {
+        if !self.is_subdivided_tree {
+            return self.decoded_leaf_state;
+        }
+        let tokens = hex_nibbles(&self.raw_attribute)?;
+        let mut index = 0;
+        let state = walk_uniform(&tokens, &mut index)?;
+        if index == tokens.len() {
+            Some(state)
+        } else {
+            None
+        }
+    }
+}
+
+fn hex_nibbles(raw: &str) -> Option<Vec<u32>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.chars().rev().map(|c| c.to_digit(16)).collect()
+}
+
+fn hex_from_bitstream(nibbles: &[u32]) -> String {
+    nibbles
+        .iter()
+        .rev()
+        .map(|n| {
+            char::from_digit(*n & 0xF, 16)
+                .unwrap_or('0')
+                .to_ascii_uppercase()
+        })
+        .collect()
+}
+
+fn encode_leaf_nibbles(mut state: u32) -> Vec<u32> {
+    if state < 3 {
+        return vec![state << 2];
+    }
+    let mut extra = Vec::new();
+    state -= 3;
+    while state >= 15 {
+        extra.push(0xF);
+        state -= 15;
+    }
+    extra.push(state);
+    let mut nibbles = vec![0xC];
+    nibbles.extend(extra);
+    nibbles
+}
+
+/// Depth-first walk. Children follow the parent nibble, matching Bambu/Orca/Prusa
+/// serialization (children are written from the last index down to zero).
+fn walk_uniform(tokens: &[u32], index: &mut usize) -> Option<u32> {
+    let code = *tokens.get(*index)?;
+    *index += 1;
+    let splits = code & 0b11;
+    if splits == 0 {
+        if (code & 0b1100) == 0b1100 {
+            let mut next = *tokens.get(*index)?;
+            *index += 1;
+            let mut escapes = 0u32;
+            while next == 0xF {
+                escapes += 1;
+                next = *tokens.get(*index)?;
+                *index += 1;
+            }
+            Some(next + 15 * escapes + 3)
+        } else {
+            Some(code >> 2)
+        }
+    } else {
+        let children = splits + 1;
+        let mut agreed: Option<u32> = None;
+        for _ in 0..children {
+            let child = walk_uniform(tokens, index)?;
+            match agreed {
+                None => agreed = Some(child),
+                Some(prev) if prev == child => {}
+                Some(_) => return None,
+            }
+        }
+        agreed
+    }
 }
 
 /// Standard 3MF per-triangle material/property tuple (`pid`, `p1`, optional `p2`, `p3`).
@@ -255,6 +353,7 @@ impl AttributeStore {
         };
         let mut summary = AttributeTransferSummary::default();
         let mut uncertain_synth = 0usize;
+        let mut uncertain_splits = 0usize;
         let mut spatial_count = 0usize;
 
         for origin in new_origins {
@@ -280,9 +379,16 @@ impl AttributeStore {
                         .get(parent.0 as usize)
                         .cloned()
                         .unwrap_or_default();
+                    let (attrs, replayed) = replay_split_attributes(attrs);
                     next.faces.push(attrs);
-                    next.confidence.push(Confidence::Inherited);
-                    summary.inherited_count += 1;
+                    if replayed {
+                        next.confidence.push(Confidence::Inherited);
+                        summary.inherited_count += 1;
+                    } else {
+                        next.confidence.push(Confidence::Uncertain);
+                        summary.uncertain_count += 1;
+                        uncertain_splits += 1;
+                    }
                 }
                 FaceOrigin::Synthesized { boundary_sources } => {
                     let (attrs, unanimous) = self.resolve_boundary(boundary_sources);
@@ -313,6 +419,11 @@ impl AttributeStore {
         if uncertain_synth > 0 {
             summary.warnings.push(format!(
                 "{uncertain_synth} synthesized face(s) border conflicting materials or paint states and were marked Uncertain"
+            ));
+        }
+        if uncertain_splits > 0 {
+            summary.warnings.push(format!(
+                "{uncertain_splits} split face(s) came from a mixed or truncated paint tree and were marked Uncertain"
             ));
         }
         if spatial_count > 0 {
@@ -389,6 +500,26 @@ impl AttributeStore {
             && fuzzy_agrees
             && tm_agrees;
         (attrs, unanimous)
+    }
+}
+
+fn replay_split_attributes(mut attrs: FaceAttributes) -> (FaceAttributes, bool) {
+    let mut ok = true;
+    attrs.paint = replay_channel(attrs.paint, &mut ok);
+    attrs.paint_supports = replay_channel(attrs.paint_supports, &mut ok);
+    attrs.paint_seam = replay_channel(attrs.paint_seam, &mut ok);
+    attrs.paint_fuzzy_skin = replay_channel(attrs.paint_fuzzy_skin, &mut ok);
+    (attrs, ok)
+}
+
+fn replay_channel(paint: Option<PaintAssignment>, ok: &mut bool) -> Option<PaintAssignment> {
+    let paint = paint?;
+    match paint.uniform_leaf_state() {
+        Some(state) => Some(PaintAssignment::leaf(paint.attr_name, state)),
+        None => {
+            *ok = false;
+            None
+        }
     }
 }
 
@@ -553,5 +684,43 @@ mod tests {
 
         assert_eq!(store.display_color_for_face(0), Some([0.0, 1.0, 0.0]));
         assert_eq!(store.display_color_for_face(1), Some([1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn split_replays_uniform_leaf_and_rejects_mixed_tree() {
+        let leaf = PaintAssignment::leaf("paint_color", 1);
+        assert_eq!(leaf.raw_attribute, "4");
+        assert_eq!(leaf.uniform_leaf_state(), Some(1));
+        assert_eq!(PaintAssignment::leaf("paint_color", 3).raw_attribute, "0C");
+        assert_eq!(PaintAssignment::leaf("paint_color", 4).raw_attribute, "1C");
+
+        // One split side, two children, both leaf state 1. Bitstream nibbles: 1, 4, 4.
+        let uniform = PaintAssignment::from_hex("441");
+        assert!(uniform.is_subdivided_tree);
+        assert_eq!(uniform.uniform_leaf_state(), Some(1));
+
+        let mixed = PaintAssignment::from_hex("841");
+        assert!(mixed.is_subdivided_tree);
+        assert_eq!(mixed.uniform_leaf_state(), None);
+
+        let mut store = AttributeStore::new_for_mesh(2);
+        store.faces[0].paint = Some(uniform);
+        store.faces[1].paint = Some(mixed);
+        let (next, summary) = store.transfer(&[
+            FaceOrigin::Split { parent: FaceId(0) },
+            FaceOrigin::Split { parent: FaceId(1) },
+        ]);
+        assert_eq!(
+            next.faces[0]
+                .paint
+                .as_ref()
+                .map(|p| p.raw_attribute.as_str()),
+            Some("4")
+        );
+        assert_eq!(next.confidence[0], Confidence::Inherited);
+        assert!(next.faces[1].paint.is_none());
+        assert_eq!(next.confidence[1], Confidence::Uncertain);
+        assert_eq!(summary.uncertain_count, 1);
+        assert_eq!(summary.warnings.len(), 1);
     }
 }

@@ -21,4 +21,4 @@ Implemented package-preserving `.3mf` import, per-object geometry repair, surgic
 ## Known Limits / Deferred to Phase 2
 
 - Triangles carrying subdivided brush split trees (`is_subdivided_tree == true`) keep their raw attribute verbatim when unchanged (`Identity`), and are marked `Uncertain` if neighboring a newly synthesized hole cap.
-- Self-intersections, T-junctions, controlled remeshing, and additional formats (`PLY`, `AMF`, `glTF`) remain deferred to Phase 2 / Milestone 5.
+- Self-intersections, T-junction stitching, thin-wall reporting, PLY, AMF, and glTF/GLB shipped in 0.3.0. Controlled remeshing, STEP, and SVG are still open.
