@@ -8,7 +8,10 @@ use mesh_formats::{
     FormatKind, RepairedThreeMfPart, ThreeMfPackage, combine_threemf_preview, load_model,
     save_model,
 };
-use mesh_repair::{RepairReport, RepairResult, repair_mesh, unsupported_features_list};
+use mesh_repair::{
+    BreakKind, BrokenSample, RepairReport, RepairResult, break_file, repair_mesh,
+    unsupported_features_list,
+};
 use mesh_validation::{
     RoundtripRequest, ValidationResult, verify_roundtrip, verify_threemf_roundtrip,
 };
@@ -93,7 +96,8 @@ impl AppViewModel {
             show_grid: true,
             camera: OrbitCamera::default(),
             banner_error: None,
-            status_line: "Drop a .3mf, .stl, or .obj file, or click Open.".to_string(),
+            status_line: "Drop a .3mf, .stl, .obj, .ply, .amf, .gltf, .glb, .svg, .step, or .stp file, or click Open."
+                .to_string(),
             before_revision: 0,
             after_revision: 0,
             repair_in_flight: false,
@@ -169,6 +173,65 @@ impl AppViewModel {
         };
         self.before_report = Some(report);
         self.status_line = status.to_string();
+    }
+
+    /// Replace the loaded model with a synthetic broken sample.
+    ///
+    /// Mesh samples are ready to repair. STEP and SVG samples are written to the
+    /// temp directory and opened, so the importer shows the refusal.
+    pub fn load_broken(&mut self, kind: BreakKind) {
+        if self.repair_in_flight {
+            return;
+        }
+        match break_file(kind) {
+            BrokenSample::Mesh { mesh, note } => {
+                let report = analyze(&mesh);
+                if let Some(bbox) = report.bounding_box {
+                    self.camera.fit_to_bbox(&bbox);
+                }
+                let face_count = mesh.faces.len();
+                self.clear_loaded();
+                self.before_mesh = Some(mesh);
+                self.before_attrs = Some(AttributeStore::new_for_mesh(face_count));
+                self.before_report = Some(report);
+                self.before_revision += 1;
+                self.after_revision += 1;
+                self.banner_error = None;
+                self.status_line = format!("Broke a sample: {note}");
+            }
+            BrokenSample::File {
+                file_name,
+                bytes,
+                note,
+            } => {
+                let path = std::env::temp_dir().join(file_name);
+                if let Err(err) = std::fs::write(&path, bytes) {
+                    self.banner_error = Some(format!("Could not write {}: {err}", path.display()));
+                    self.status_line = "Break failed.".to_string();
+                    return;
+                }
+                self.clear_loaded();
+                self.open_path(&path);
+                self.status_line = format!("Broke a sample: {note}");
+            }
+        }
+    }
+
+    fn clear_loaded(&mut self) {
+        self.source_path = None;
+        self.source_format = None;
+        self.threemf_pkg = None;
+        self.threemf_part_reports.clear();
+        self.threemf_part_results.clear();
+        self.selected_part = None;
+        self.before_mesh = None;
+        self.before_attrs = None;
+        self.before_report = None;
+        self.after_mesh = None;
+        self.after_attrs = None;
+        self.repair_result = None;
+        self.validation = None;
+        self.banner_error = None;
     }
 
     /// Spawn a background repair job using the active [`RepairProfile`].
@@ -768,5 +831,27 @@ mod tests {
         let val = vm.export_to_path(&dst).expect("export");
         assert!(val.passed);
         assert!(dst.exists());
+    }
+
+    #[test]
+    fn break_menu_loads_a_thin_wall_and_refuses_step_and_svg() {
+        let mut vm = AppViewModel::new();
+        vm.load_broken(BreakKind::ThinWalls);
+        assert!(vm.threemf_pkg.is_none());
+        assert!(
+            vm.before_report
+                .as_ref()
+                .is_some_and(|report| !report.thin_walls.is_empty())
+        );
+
+        vm.load_broken(BreakKind::AnalyticStep);
+        assert!(vm.before_mesh.is_none());
+        let step_err = vm.banner_error.clone().unwrap_or_default();
+        assert!(step_err.contains("Analytic"), "step refusal was {step_err}");
+
+        vm.load_broken(BreakKind::SvgCurvesTransformsHoles);
+        assert!(vm.before_mesh.is_none());
+        let svg_err = vm.banner_error.clone().unwrap_or_default();
+        assert!(svg_err.contains("curves"), "svg refusal was {svg_err}");
     }
 }

@@ -37,7 +37,7 @@ impl From<ProfileArg> for RepairProfile {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Inspect a mesh file (.3mf, .stl, .obj) without modifying anything on disk.
+    /// Inspect a mesh file (.3mf, .stl, .obj, .ply, .amf, .gltf, .glb, .svg, .step, .stp) without modifying anything on disk.
     Analyze {
         input: PathBuf,
         #[arg(long)]

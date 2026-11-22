@@ -4,7 +4,23 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Compile-only placeholder for the future Axum-based repair web service"
+description = "Localhost Axum service for mesh repair"
 
 [dependencies]
+mesh-analysis = { path = "../mesh-analysis" }
+mesh-attributes = { path = "../mesh-attributes" }
 mesh-core = { path = "../mesh-core" }
+mesh-formats = { path = "../mesh-formats" }
+mesh-repair = { path = "../mesh-repair" }
+mesh-validation = { path = "../mesh-validation" }
+axum.workspace = true
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[[bin]]
+name = "mesh-repair-web"
+path = "src/main.rs"

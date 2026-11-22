@@ -1,5 +1,10 @@
 //! Safe mesh importers and exporters (STL, OBJ, and package-preserving 3MF).
 
+pub mod amf;
+pub mod gltf;
+pub mod ply;
+pub mod step;
+pub mod svg;
 pub mod threemf;
 
 use mesh_attributes::AttributeStore;
@@ -20,6 +25,12 @@ pub enum FormatKind {
     StlAscii,
     Obj,
     ThreeMf,
+    Ply,
+    Amf,
+    Gltf,
+    Glb,
+    Svg,
+    Step,
 }
 
 /// Loaded mesh paired with any categorical attributes, optional 3MF package, and import warnings.
@@ -44,8 +55,14 @@ pub fn load_model(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, M
         "stl" => load_stl_path(path, limits),
         "obj" => load_obj_path(path, limits),
         "3mf" => load_threemf_path(path, limits),
+        "ply" => load_ply_path(path, limits),
+        "amf" => load_amf_path(path, limits),
+        "gltf" => load_gltf_path(path, limits, FormatKind::Gltf),
+        "glb" => load_gltf_path(path, limits, FormatKind::Glb),
+        "svg" => load_svg_path(path, limits),
+        "step" | "stp" => load_step_path(path, limits),
         other => Err(MeshError::UnsupportedFormat(format!(
-            "unsupported file extension '.{other}'; supported formats are .stl, .obj, and .3mf"
+            "unsupported file extension '.{other}'; supported formats are .stl, .obj, .3mf, .ply, .amf, .gltf, .glb, .svg, .step, and .stp"
         ))),
     }
 }
@@ -157,14 +174,147 @@ pub fn save_model(
             write_obj_path(path, mesh, attributes)?;
             Ok(FormatKind::Obj)
         }
+        "ply" => {
+            write_ply_path(path, mesh, attributes)?;
+            Ok(FormatKind::Ply)
+        }
+        "amf" => {
+            write_amf_path(path, mesh, attributes)?;
+            Ok(FormatKind::Amf)
+        }
+        "gltf" => {
+            write_gltf_path(path, mesh, attributes)?;
+            Ok(FormatKind::Gltf)
+        }
+        "glb" => {
+            write_glb_path(path, mesh, attributes)?;
+            Ok(FormatKind::Glb)
+        }
+        "svg" => Err(MeshError::UnsupportedFormat(
+            "SVG is import-only. Export the repaired mesh as .stl, .obj, .ply, .amf, .gltf, .glb, or .3mf."
+                .to_string(),
+        )),
+        "step" | "stp" => Err(MeshError::UnsupportedFormat(
+            "STEP is import-only. Export the repaired mesh as .stl, .obj, .ply, .amf, .gltf, .glb, or .3mf."
+                .to_string(),
+        )),
         "3mf" => Err(MeshError::UnsupportedFormat(
             "3MF export must use ThreeMfPackage::write_repaired_path to preserve package entries and painting."
                 .to_string(),
         )),
         other => Err(MeshError::UnsupportedFormat(format!(
-            "unsupported export extension '.{other}'; supported formats are .stl and .obj"
+            "unsupported export extension '.{other}'; supported formats are .stl, .obj, .ply, .amf, .gltf, and .glb"
         ))),
     }
+}
+
+fn read_limited(path: &Path, limits: &ResourceLimits) -> Result<Vec<u8>, MeshError> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > limits.max_file_bytes {
+        return Err(MeshError::FileTooLarge {
+            size: meta.len(),
+            limit: limits.max_file_bytes,
+        });
+    }
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limits.max_file_bytes {
+        return Err(MeshError::FileTooLarge {
+            size: bytes.len() as u64,
+            limit: limits.max_file_bytes,
+        });
+    }
+    Ok(bytes)
+}
+
+fn loaded_simple(
+    mesh: TriangleMesh,
+    attributes: AttributeStore,
+    source_format: FormatKind,
+) -> LoadedModel {
+    LoadedModel {
+        mesh,
+        attributes,
+        source_format,
+        warnings: Vec::new(),
+        threemf: None,
+    }
+}
+
+/// Load a PLY file from `path`.
+pub fn load_ply_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = ply::load_ply_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Ply))
+}
+
+/// Load an AMF file from `path`.
+pub fn load_amf_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = amf::load_amf_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Amf))
+}
+
+/// Load an SVG file from `path` and extrude each simple contour.
+pub fn load_svg_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = svg::load_svg_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Svg))
+}
+
+/// Load tessellated triangular faces from a STEP file at `path`.
+pub fn load_step_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = step::load_step_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Step))
+}
+
+/// Load a `.gltf` or `.glb` file from `path`.
+pub fn load_gltf_path(
+    path: &Path,
+    limits: &ResourceLimits,
+    kind: FormatKind,
+) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = gltf::load_gltf_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, kind))
+}
+
+fn write_ply_path(
+    path: &Path,
+    mesh: &TriangleMesh,
+    attributes: &AttributeStore,
+) -> Result<(), MeshError> {
+    let file = File::create(path)?;
+    ply::write_ply(BufWriter::new(file), mesh, attributes)
+}
+
+fn write_amf_path(
+    path: &Path,
+    mesh: &TriangleMesh,
+    attributes: &AttributeStore,
+) -> Result<(), MeshError> {
+    let file = File::create(path)?;
+    amf::write_amf(BufWriter::new(file), mesh, attributes)
+}
+
+fn write_gltf_path(
+    path: &Path,
+    mesh: &TriangleMesh,
+    attributes: &AttributeStore,
+) -> Result<(), MeshError> {
+    let file = File::create(path)?;
+    gltf::write_gltf(BufWriter::new(file), mesh, attributes)
+}
+
+fn write_glb_path(
+    path: &Path,
+    mesh: &TriangleMesh,
+    attributes: &AttributeStore,
+) -> Result<(), MeshError> {
+    let file = File::create(path)?;
+    gltf::write_glb(BufWriter::new(file), mesh, attributes)
 }
 
 /// Load an STL file (auto-detecting binary vs ASCII) from `path`.
@@ -820,5 +970,110 @@ f 1 2 3
         let gerr = ThreeMfPackage::load_slice(&gbuf.into_inner(), &ResourceLimits::default())
             .expect_err("must reject sliced gcode 3mf");
         assert!(matches!(gerr, MeshError::UnsupportedFormat(_)));
+    }
+}
+
+#[cfg(test)]
+mod extra_formats {
+    use super::*;
+    use mesh_attributes::AttributeStore;
+    use mesh_core::ResourceLimits;
+    use nalgebra::Point3;
+    use proptest::prelude::*;
+
+    fn tri() -> (TriangleMesh, AttributeStore) {
+        let mesh = TriangleMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![[0, 1, 2]],
+        );
+        let mut attrs = AttributeStore::new_for_mesh(1);
+        attrs.faces[0].material_id = Some(7);
+        (mesh, attrs)
+    }
+
+    #[test]
+    fn ply_ascii_roundtrip_keeps_material() {
+        let (mesh, attrs) = tri();
+        let mut buf = Vec::new();
+        ply::write_ply(&mut buf, &mesh, &attrs).expect("write");
+        let (loaded, loaded_attrs) =
+            ply::load_ply_slice(&buf, &ResourceLimits::default()).expect("load");
+        assert_eq!(loaded.faces, mesh.faces);
+        assert!((loaded.vertices[1].x - 1.0).abs() < 1e-12);
+        assert_eq!(loaded_attrs.faces[0].material_id, Some(7));
+    }
+
+    #[test]
+    fn ply_binary_little_endian_reads_triangle() {
+        let bytes = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n";
+        let mut buf = bytes.to_vec();
+        for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]] {
+            for c in v {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        buf.push(3);
+        for i in [0u32, 1, 2] {
+            buf.extend_from_slice(&i.to_le_bytes());
+        }
+        let (mesh, _) = ply::load_ply_slice(&buf, &ResourceLimits::default()).expect("binary");
+        assert_eq!(mesh.faces, vec![[0, 1, 2]]);
+        assert!((mesh.vertices[2].y - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn amf_roundtrip_keeps_material_and_rejects_doctype() {
+        let (mesh, attrs) = tri();
+        let mut buf = Vec::new();
+        amf::write_amf(&mut buf, &mesh, &attrs).expect("write");
+        let (loaded, loaded_attrs) =
+            amf::load_amf_slice(&buf, &ResourceLimits::default()).expect("load");
+        assert_eq!(loaded.faces, mesh.faces);
+        assert_eq!(loaded_attrs.faces[0].material_id, Some(7));
+        let hostile = br#"<?xml version="1.0"?><!DOCTYPE amf [<!ENTITY x "y">]><amf unit="millimeter"></amf>"#;
+        assert!(amf::load_amf_slice(hostile, &ResourceLimits::default()).is_err());
+    }
+
+    #[test]
+    fn gltf_and_glb_roundtrip_material_ids() {
+        let (mesh, attrs) = tri();
+        let mut gltf = Vec::new();
+        gltf::write_gltf(&mut gltf, &mesh, &attrs).expect("gltf");
+        let (loaded, loaded_attrs) =
+            gltf::load_gltf_slice(&gltf, &ResourceLimits::default()).expect("load gltf");
+        assert_eq!(loaded.faces, mesh.faces);
+        assert!((loaded.vertices[0].x).abs() < 1e-5);
+        assert_eq!(loaded_attrs.faces[0].material_id, Some(7));
+        let mut glb = Vec::new();
+        gltf::write_glb(&mut glb, &mesh, &attrs).expect("glb");
+        let (loaded, _) =
+            gltf::load_gltf_slice(&glb, &ResourceLimits::default()).expect("load glb");
+        assert_eq!(loaded.faces.len(), 1);
+    }
+
+    fn tight() -> ResourceLimits {
+        ResourceLimits {
+            max_file_bytes: 4096,
+            max_triangles: 32,
+            max_vertices: 32,
+            ..ResourceLimits::default()
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn random_bytes_do_not_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let limits = tight();
+            let _ = ply::load_ply_slice(&bytes, &limits);
+            let _ = amf::load_amf_slice(&bytes, &limits);
+            let _ = gltf::load_gltf_slice(&bytes, &limits);
+            let _ = svg::load_svg_slice(&bytes, &limits);
+            let _ = step::load_step_slice(&bytes, &limits);
+            let _ = load_stl_slice(&bytes, &limits);
+        }
     }
 }

@@ -13,7 +13,7 @@ This project is dual-licensed under **MIT OR Apache-2.0**. Core crates avoid C++
 | **Rabbit1015/blender-3mf-repair** | GPL-3.0-or-later | **Not copied.** Observed `paint_color` handling notes only. |
 | **monomyth/mmu-remapper** | MIT | Reference for Bambu/Orca `paint_color` and Prusa `mmu_segmentation` layout. |
 | **elalish/manifold** | Apache-2.0 | Permissive C++ option; deferred (not in Phase 1, as remeshing destroys triangle correspondence). |
-| **dimforge/parry3d** | Apache-2.0 | Planned Phase 2 pure-Rust option for self-intersection detection. |
+| **dimforge/parry3d** | Apache-2.0 | Used at 0.25.3 (`std`, `alloc`, `dim3`, `f32`) for the self-intersection broadphase. Narrow-phase tests stay in `f64`. nalgebra types are not passed across the version boundary. |
 | **lib3mf-core / threemf** | BSD-2-Clause / 0BSD | Evaluated for Milestone 3; both rebuild models from parsed objects and would drop unknown Bambu XML, so Milestone 3 will use a package-preserving ZIP/XML layer. |
 
 ## Workspace Crate Dependencies

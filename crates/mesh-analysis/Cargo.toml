@@ -9,4 +9,5 @@ description = "Non-mutating topology and geometry diagnostics for triangle meshe
 [dependencies]
 mesh-core = { path = "../mesh-core" }
 nalgebra.workspace = true
+parry3d = { version = "0.25.3", default-features = false, features = ["std", "alloc", "dim3", "f32"] }
 serde.workspace = true

@@ -1,5 +1,14 @@
 //! Conservative, standard, and aggressive mesh repair pipelines with face correspondence.
 
+pub mod breakage;
+mod phase2;
+mod remesh;
+
+pub use breakage::{BreakKind, BrokenSample, break_file};
+
+use phase2::{SplitCrossingsOp, StitchTJunctionsOp, UnionOverlappingShellsOp};
+use remesh::ControlledRemeshOp;
+
 use mesh_analysis::{BoundaryLoop, ComponentInfo, DiagnosticReport, analyze};
 use mesh_attributes::{AttributeStore, AttributeTransferSummary, FaceOrigin, compose_origins};
 use mesh_core::{BoundingBox, EdgeKey, FaceId, MeshError, RepairProfile, TriangleMesh};
@@ -61,12 +70,12 @@ pub struct RepairResult {
 #[must_use]
 pub fn unsupported_features_list() -> Vec<String> {
     vec![
-        "Self-intersecting triangle resolution (deferred to Phase 2)".to_string(),
-        "T-junction / crack stitching and controlled remeshing (deferred to Phase 2)".to_string(),
-        "Thin-wall detection (deferred to Phase 2)".to_string(),
-        "Color-safe 3MF package editing and Bambu/Orca paint_color export (Milestone 3)"
+        "Analytic STEP solids (cylinders, NURBS, and non-triangular faces) are not meshed"
             .to_string(),
-        "AMF, PLY, glTF/GLB, STEP, SVG adapters and web service (Milestones 5-6)".to_string(),
+        "SVG curves, transforms, and holes are not imported; accepted shapes are extruded 1 mm"
+            .to_string(),
+        "Thin walls are reported and left in place so intentional shells are not deleted"
+            .to_string(),
     ]
 }
 
@@ -83,11 +92,22 @@ pub fn repair_mesh(
 ) -> Result<RepairResult, MeshError> {
     let before = analyze(mesh);
 
-    if before.is_watertight && before.exact_duplicate_vertex_count == 0 && !before.has_errors() {
+    if before.is_watertight
+        && before.exact_duplicate_vertex_count == 0
+        && before.t_junctions.is_empty()
+        && !before.has_errors()
+    {
         let attr_summary = AttributeTransferSummary {
             exact_count: attributes.faces.len(),
             ..Default::default()
         };
+        let mut unresolved_notes = Vec::new();
+        if !before.thin_walls.is_empty() {
+            unresolved_notes.push(format!(
+                "{} thin-wall face pair(s) reported and left unchanged",
+                before.thin_walls.len()
+            ));
+        }
         return Ok(RepairResult {
             mesh: mesh.clone(),
             attributes: attributes.clone(),
@@ -99,7 +119,7 @@ pub fn repair_mesh(
                 rejected_steps: Vec::new(),
                 attribute_summary: attr_summary,
                 warnings: Vec::new(),
-                unresolved_notes: Vec::new(),
+                unresolved_notes,
                 was_noop: true,
                 unsupported_features: unsupported_features_list(),
             },
@@ -118,7 +138,7 @@ pub fn repair_mesh(
 
     if profile == RepairProfile::Aggressive {
         warnings.push(
-            "Aggressive profile enabled: wider hole caps and small-fragment pruning may alter fine surface detail."
+            "Aggressive profile enabled: wider hole caps, small-fragment pruning, and local remeshing may alter fine surface detail. Faces that lose exact correspondence are marked uncertain."
                 .to_string(),
         );
     }
@@ -201,6 +221,24 @@ pub fn repair_mesh(
             current_report.winding_conflict_edges.len()
         ));
     }
+    if !current_report.self_intersections.is_empty() {
+        unresolved_notes.push(format!(
+            "{} self-intersection(s) remain",
+            current_report.self_intersections.len()
+        ));
+    }
+    if !current_report.t_junctions.is_empty() {
+        unresolved_notes.push(format!(
+            "{} T-junction(s) remain",
+            current_report.t_junctions.len()
+        ));
+    }
+    if !current_report.thin_walls.is_empty() {
+        unresolved_notes.push(format!(
+            "{} thin-wall face pair(s) reported and left in place",
+            current_report.thin_walls.len()
+        ));
+    }
 
     Ok(RepairResult {
         mesh: current_mesh,
@@ -235,6 +273,9 @@ fn check_adopt(
     }
     if cand_report.non_manifold_edges.len() > prev_report.non_manifold_edges.len() {
         return Err("increased non-manifold edge count".to_string());
+    }
+    if cand_report.self_intersections.len() > prev_report.self_intersections.len() {
+        return Err("increased self-intersections".to_string());
     }
     let deleted = prev_mesh
         .faces
@@ -279,6 +320,8 @@ fn build_pipeline(profile: RepairProfile) -> Vec<Box<dyn RepairOp>> {
             Box::new(RemoveDegenerateAndDuplicateFacesOp),
             Box::new(SplitBowtieVerticesOp),
             Box::new(FixWindingOp),
+            Box::new(StitchTJunctionsOp),
+            Box::new(SplitCrossingsOp),
             Box::new(RemoveSimpleFinsOp),
             Box::new(FillSmallHolesOp {
                 max_edges: 16,
@@ -297,6 +340,9 @@ fn build_pipeline(profile: RepairProfile) -> Vec<Box<dyn RepairOp>> {
             Box::new(RemoveDegenerateAndDuplicateFacesOp),
             Box::new(SplitBowtieVerticesOp),
             Box::new(FixWindingOp),
+            Box::new(StitchTJunctionsOp),
+            Box::new(SplitCrossingsOp),
+            Box::new(UnionOverlappingShellsOp),
             Box::new(RemoveSimpleFinsOp),
             Box::new(FillSmallHolesOp {
                 max_edges: 64,
@@ -308,6 +354,7 @@ fn build_pipeline(profile: RepairProfile) -> Vec<Box<dyn RepairOp>> {
                 max_faces: None,
                 max_area_ratio: Some(0.01),
             }),
+            Box::new(ControlledRemeshOp),
         ],
     }
 }

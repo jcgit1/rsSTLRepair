@@ -1,5 +1,12 @@
 //! Non-mutating topology and geometry diagnostics for [`TriangleMesh`].
 
+mod geometry;
+
+pub use geometry::{
+    GeometryScan, SelfIntersection, TJunction, ThinWall, boundary_cut, crossing_segment,
+    scan_geometry,
+};
+
 use mesh_core::{BoundingBox, EdgeKey, EdgeUse, FaceId, RepairProfile, TriangleMesh, VertexId};
 use nalgebra::{Point3, Vector3};
 use serde::{Deserialize, Serialize};
@@ -27,6 +34,9 @@ pub enum DefectKind {
     InsideOutShell,
     NonManifoldVertices,
     DisconnectedComponents,
+    SelfIntersection,
+    TJunction,
+    ThinWall,
 }
 
 /// One structured diagnostic finding with severity and repairability metadata.
@@ -83,6 +93,12 @@ pub struct DiagnosticReport {
     pub non_manifold_vertices: Vec<VertexId>,
     pub components: Vec<ComponentInfo>,
     pub boundary_loops: Vec<BoundaryLoop>,
+    /// Triangle pairs whose interiors cross or overlap. Adjacent faces that only share an edge are excluded.
+    pub self_intersections: Vec<SelfIntersection>,
+    /// Vertices that lie on the interior of an edge they are not a member of.
+    pub t_junctions: Vec<TJunction>,
+    /// Nearly parallel, opposite-facing triangles closer than a print-scale gap.
+    pub thin_walls: Vec<ThinWall>,
     pub bounding_box: Option<BoundingBox>,
     pub surface_area: f64,
     pub signed_volume: f64,
@@ -116,9 +132,17 @@ impl DiagnosticReport {
             self.winding_conflict_edges.len()
         ));
         lines.push(format!(
+            "Geometry: {} self-intersection(s), {} T-junction(s), {} thin-wall pair(s)",
+            self.self_intersections.len(),
+            self.t_junctions.len(),
+            self.thin_walls.len()
+        ));
+        lines.push(format!(
             "Status: {}",
-            if self.is_watertight {
+            if self.is_watertight && self.self_intersections.is_empty() {
                 "Watertight solid"
+            } else if self.is_watertight {
+                "Closed shell with self-intersections"
             } else if self.is_valid_open_surface {
                 "Valid open surface (intentional or unclosed boundary)"
             } else {
@@ -236,6 +260,10 @@ pub fn analyze(mesh: &TriangleMesh) -> DiagnosticReport {
     let non_manifold_vertices = find_non_manifold_vertices(mesh, &incidence);
     let components = find_components(mesh, &incidence);
     let boundary_loops = trace_boundary_loops(mesh, &boundary_edges, &incidence);
+    let geometry = scan_geometry(mesh);
+    let self_intersections = geometry.self_intersections;
+    let t_junctions = geometry.t_junctions;
+    let thin_walls = geometry.thin_walls;
 
     let bounding_box = mesh.bounding_box();
     let surface_area = mesh.surface_area();
@@ -265,6 +293,7 @@ pub fn analyze(mesh: &TriangleMesh) -> DiagnosticReport {
         && non_manifold_edges.is_empty()
         && winding_conflict_edges.is_empty()
         && non_manifold_vertices.is_empty()
+        && self_intersections.is_empty()
         && !boundary_edges.is_empty();
 
     let mut findings = Vec::new();
@@ -408,6 +437,42 @@ pub fn analyze(mesh: &TriangleMesh) -> DiagnosticReport {
             min_profile_to_repair: Some(RepairProfile::Standard),
         });
     }
+    if !self_intersections.is_empty() {
+        findings.push(DiagnosticFinding {
+            kind: DefectKind::SelfIntersection,
+            severity: Severity::Error,
+            count: self_intersections.len(),
+            message: format!(
+                "{} triangle pair(s) have intersecting interiors",
+                self_intersections.len()
+            ),
+            min_profile_to_repair: Some(RepairProfile::Standard),
+        });
+    }
+    if !t_junctions.is_empty() {
+        findings.push(DiagnosticFinding {
+            kind: DefectKind::TJunction,
+            severity: Severity::Warning,
+            count: t_junctions.len(),
+            message: format!(
+                "{} T-junction(s): a vertex lies on an edge it does not belong to",
+                t_junctions.len()
+            ),
+            min_profile_to_repair: Some(RepairProfile::Standard),
+        });
+    }
+    if !thin_walls.is_empty() {
+        findings.push(DiagnosticFinding {
+            kind: DefectKind::ThinWall,
+            severity: Severity::Warning,
+            count: thin_walls.len(),
+            message: format!(
+                "{} thin-wall face pair(s) are closer than the print-scale gap (reported, not deleted)",
+                thin_walls.len()
+            ),
+            min_profile_to_repair: None,
+        });
+    }
 
     DiagnosticReport {
         vertex_count,
@@ -424,6 +489,9 @@ pub fn analyze(mesh: &TriangleMesh) -> DiagnosticReport {
         non_manifold_vertices,
         components,
         boundary_loops,
+        self_intersections,
+        t_junctions,
+        thin_walls,
         bounding_box,
         surface_area,
         signed_volume,
@@ -807,5 +875,50 @@ mod tests {
         assert_eq!(report.exact_duplicate_vertex_count, 1);
         assert_eq!(report.duplicate_faces.len(), 1);
         assert_eq!(report.zero_area_faces.len(), 2);
+    }
+
+    #[test]
+    fn clean_cube_has_no_geometric_defects() {
+        let report = analyze(&unit_cube());
+        assert!(report.self_intersections.is_empty());
+        assert!(report.t_junctions.is_empty());
+        assert!(report.thin_walls.is_empty());
+    }
+
+    #[test]
+    fn detects_crossing_triangles_and_t_junction() {
+        let crossing = TriangleMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(1.0, 2.0, 0.0),
+                Point3::new(0.0, 0.5, -1.0),
+                Point3::new(2.0, 0.5, -1.0),
+                Point3::new(1.0, 0.5, 1.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        let report = analyze(&crossing);
+        assert_eq!(report.self_intersections.len(), 1);
+        assert!(report.has_errors());
+
+        let tee = TriangleMesh::from_parts(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, -1.0, 0.0),
+            ],
+            vec![[0, 1, 2], [3, 4, 0]],
+        );
+        let tee_report = analyze(&tee);
+        assert!(!tee_report.t_junctions.is_empty());
+        assert!(
+            tee_report
+                .t_junctions
+                .iter()
+                .any(|t| t.vertex == VertexId(3))
+        );
     }
 }

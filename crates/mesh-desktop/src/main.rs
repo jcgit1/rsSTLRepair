@@ -4,6 +4,7 @@ mod viewport_wgpu;
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Frame, RichText, Stroke};
 use mesh_core::RepairProfile;
+use mesh_repair::BreakKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -206,7 +207,12 @@ impl DesktopApp {
         ui.horizontal_wrapped(|ui| {
             if ui.button("Open...").clicked()
                 && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Supported Meshes", &["3mf", "stl", "obj"])
+                    .add_filter(
+                        "Supported Meshes",
+                        &[
+                            "3mf", "stl", "obj", "ply", "amf", "gltf", "glb", "svg", "step", "stp",
+                        ],
+                    )
                     .add_filter("All Files", &["*"])
                     .pick_file()
             {
@@ -261,6 +267,17 @@ impl DesktopApp {
                 self.vm.start_repair();
             }
 
+            ui.add_enabled_ui(!self.vm.repair_in_flight, |ui| {
+                ui.menu_button("Break", |ui| {
+                    for kind in BreakKind::ALL {
+                        if ui.button(kind.label()).clicked() {
+                            self.vm.load_broken(kind);
+                            ui.close();
+                        }
+                    }
+                });
+            });
+
             let can_export = self.vm.after_mesh.is_some() && !self.vm.repair_in_flight;
             if ui
                 .add_enabled(can_export, egui::Button::new("Export..."))
@@ -272,6 +289,10 @@ impl DesktopApp {
                     rfd::FileDialog::new()
                         .add_filter("STL Binary", &["stl"])
                         .add_filter("Wavefront OBJ", &["obj"])
+                        .add_filter("PLY", &["ply"])
+                        .add_filter("AMF", &["amf"])
+                        .add_filter("glTF", &["gltf"])
+                        .add_filter("GLB", &["glb"])
                 };
                 if let Some(suggested) = self.vm.suggested_export_path() {
                     if let Some(parent) = suggested.parent() {
@@ -391,7 +412,12 @@ impl DesktopApp {
 
         let subtitle = match slot {
             ViewportSlot::Before => match &self.vm.before_report {
-                Some(r) if r.is_watertight => "WATERTIGHT".to_string(),
+                Some(r) if r.is_watertight && r.self_intersections.is_empty() => {
+                    "WATERTIGHT".to_string()
+                }
+                Some(r) if r.is_watertight => {
+                    format!("CLOSED | {} intersections", r.self_intersections.len())
+                }
                 Some(r) if r.is_valid_open_surface => {
                     format!("OPEN SURFACE ({} boundary)", r.boundary_edges.len())
                 }
@@ -401,11 +427,20 @@ impl DesktopApp {
                     r.non_manifold_edges.len(),
                     r.winding_conflict_edges.len()
                 ),
-                None => "Drop .3mf, .stl, or .obj to inspect".to_string(),
+                None => "Drop a mesh file to inspect".to_string(),
             },
             ViewportSlot::After => match &self.vm.repair_result {
                 Some(res) if res.report.was_noop => "NO-OP (already clean)".to_string(),
-                Some(res) if res.report.after.is_watertight => "WATERTIGHT".to_string(),
+                Some(res)
+                    if res.report.after.is_watertight
+                        && res.report.after.self_intersections.is_empty() =>
+                {
+                    "WATERTIGHT".to_string()
+                }
+                Some(res) if res.report.after.is_watertight => format!(
+                    "CLOSED | {} intersections",
+                    res.report.after.self_intersections.len()
+                ),
                 Some(res) => format!(
                     "{} boundary | {} non-manifold | {} winding",
                     res.report.after.boundary_edges.len(),
@@ -566,13 +601,31 @@ impl DesktopApp {
                         );
                         metric_row(
                             ui,
+                            "Intersections",
+                            before.self_intersections.len().to_string(),
+                            after.map_or("-".into(), |a| a.self_intersections.len().to_string()),
+                        );
+                        metric_row(
+                            ui,
+                            "T-junctions",
+                            before.t_junctions.len().to_string(),
+                            after.map_or("-".into(), |a| a.t_junctions.len().to_string()),
+                        );
+                        metric_row(
+                            ui,
+                            "Thin walls",
+                            before.thin_walls.len().to_string(),
+                            after.map_or("-".into(), |a| a.thin_walls.len().to_string()),
+                        );
+                        metric_row(
+                            ui,
                             "Components",
                             before.components.len().to_string(),
                             after.map_or("-".into(), |a| a.components.len().to_string()),
                         );
                     });
             } else {
-                ui.label(RichText::new("Load an STL or OBJ model to view diagnostics.").color(TEXT_MUTED));
+                ui.label(RichText::new("Load a mesh to view diagnostics.").color(TEXT_MUTED));
             }
 
             ui.add_space(10.0);
@@ -669,8 +722,10 @@ impl DesktopApp {
             ui.separator();
             ui.label(
                 RichText::new(
-                    "Current: 3MF (paint_color & Bambu/Orca package preservation), STL, OBJ, Phase 1 repairs.\n\
-                     Deferred: self-intersections, remeshing, AMF, PLY, glTF, STEP, SVG.",
+                    "Opens 3MF, STL, OBJ, PLY, AMF, glTF/GLB, simple SVG, and tessellated STEP.\n\
+                     Does not fix thin walls, large or bent holes, or ambiguous non-manifold edges.\n\
+                     Does not mesh analytic STEP solids or SVG curves, transforms, or holes.\n\
+                     Paint and materials are copied, never blended. The original file is never overwritten.",
                 )
                 .small()
                 .color(TEXT_MUTED),
@@ -778,7 +833,7 @@ impl eframe::App for DesktopApp {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop .3mf, .stl, or .obj file to load",
+                "Drop a mesh file to load",
                 egui::FontId::proportional(20.0),
                 TEXT_PRIMARY,
             );
