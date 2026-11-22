@@ -1,8 +1,13 @@
 //! Conservative, standard, and aggressive mesh repair pipelines with face correspondence.
 
+pub mod breakage;
 mod phase2;
+mod remesh;
+
+pub use breakage::{BreakKind, BrokenSample, break_file};
 
 use phase2::{SplitCrossingsOp, StitchTJunctionsOp, UnionOverlappingShellsOp};
+use remesh::ControlledRemeshOp;
 
 use mesh_analysis::{BoundaryLoop, ComponentInfo, DiagnosticReport, analyze};
 use mesh_attributes::{AttributeStore, AttributeTransferSummary, FaceOrigin, compose_origins};
@@ -65,7 +70,10 @@ pub struct RepairResult {
 #[must_use]
 pub fn unsupported_features_list() -> Vec<String> {
     vec![
-        "STEP and SVG CAD adapters".to_string(),
+        "Analytic STEP solids (cylinders, NURBS, and non-triangular faces) are not meshed"
+            .to_string(),
+        "SVG curves, transforms, and holes are not imported; accepted shapes are extruded 1 mm"
+            .to_string(),
         "Thin walls are reported and left in place so intentional shells are not deleted"
             .to_string(),
     ]
@@ -130,7 +138,7 @@ pub fn repair_mesh(
 
     if profile == RepairProfile::Aggressive {
         warnings.push(
-            "Aggressive profile enabled: wider hole caps and small-fragment pruning may alter fine surface detail."
+            "Aggressive profile enabled: wider hole caps, small-fragment pruning, and local remeshing may alter fine surface detail. Faces that lose exact correspondence are marked uncertain."
                 .to_string(),
         );
     }
@@ -346,6 +354,7 @@ fn build_pipeline(profile: RepairProfile) -> Vec<Box<dyn RepairOp>> {
                 max_faces: None,
                 max_area_ratio: Some(0.01),
             }),
+            Box::new(ControlledRemeshOp),
         ],
     }
 }

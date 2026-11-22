@@ -20,8 +20,6 @@ cargo test --workspace
 
 ## Next Slice
 
-Phase 2 geometry, PLY/AMF/glTF, and the localhost repair service shipped in 0.3.0. Still open:
+Phase 2 geometry, PLY/AMF/glTF, the localhost repair service, Aggressive controlled remeshing, and the publish user guide are in the tree. SVG import extrudes simple contours. STEP import reads triangular `POLY_LOOP` faces only. Still open:
 
-1. Controlled remeshing that warns when face correspondence becomes spatial.
-2. STEP and SVG adapters.
-3. Large-mesh benchmarks and slicer compatibility checks beyond the current fixtures.
+1. Large-mesh benchmarks and slicer compatibility checks beyond the current fixtures.

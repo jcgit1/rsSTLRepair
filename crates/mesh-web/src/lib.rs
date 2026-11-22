@@ -136,7 +136,7 @@ fn repair_upload(
     if !matches!(ext.as_str(), "stl" | "obj" | "ply" | "amf" | "gltf" | "glb") {
         return Err(fail(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "X-Filename must end in .stl, .obj, .ply, .amf, .gltf, or .glb",
+            "X-Filename must end in .stl, .obj, .ply, .amf, .gltf, or .glb. 3MF, SVG, and STEP stay on the CLI and desktop app.",
         ));
     }
     if bytes.len() as u64 > limits.max_upload_bytes {

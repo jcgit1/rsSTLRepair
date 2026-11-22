@@ -12,8 +12,8 @@
 - `crates/mesh-core`: `TriangleMesh`, `VertexId`, `FaceId`, `EdgeKey`, `RepairProfile`, `BoundingBox`, `ResourceLimits`, `MeshError`.
 - `crates/mesh-attributes`: `AttributeStore`, `FaceOrigin`, `Confidence`, `PaintAssignment` (TriangleSelector nibble decoder), `compose_origins`.
 - `crates/mesh-analysis`: non-mutating `analyze(&TriangleMesh) -> DiagnosticReport`, including self-intersections, T-junctions, and thin walls.
-- `crates/mesh-formats`: STL, OBJ, PLY, AMF, glTF/GLB, and package-preserving 3MF. `.3mf` export goes through `ThreeMfPackage`, not `save_model`.
-- `crates/mesh-repair`: `RepairOp` trait, `repair_mesh` pipeline, adopt-or-reject policy, cancellation support.
+- `crates/mesh-formats`: STL, OBJ, PLY, AMF, glTF/GLB, import-only SVG extrusion, import-only tessellated STEP, and package-preserving 3MF. `.3mf` export goes through `ThreeMfPackage`, not `save_model`.
+- `crates/mesh-repair`: `RepairOp` trait, `repair_mesh` pipeline, adopt-or-reject policy, cancellation support, and Aggressive controlled remesh with spatial face origins.
 - `crates/mesh-validation`: `verify_roundtrip` post-repair export/reimport checks.
 - `crates/mesh-cli`: `mesh-repair` CLI (`analyze`, `repair`).
 - `crates/mesh-desktop`: `mesh-repair-gui` (`eframe` + `wgpu` 3D viewports, headless-tested `AppViewModel`).

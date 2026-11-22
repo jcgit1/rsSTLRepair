@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Aggressive controlled remesh of skinny defect patches. Long edges split and short edges collapse on the input surface. Faces that no longer lie on one input triangle use spatial attribute transfer and are marked uncertain.
+- Import-only SVG extrusion of simple closed shapes, and import-only STEP reading of triangular `POLY_LOOP` faces. Curves, transforms, holes, and analytic STEP solids are refused.
+- Publish-facing user guide (`docs/USER-GUIDE.md`) describing what each profile fixes and what is left unchanged.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added

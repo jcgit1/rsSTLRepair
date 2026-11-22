@@ -4,6 +4,7 @@ mod viewport_wgpu;
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Frame, RichText, Stroke};
 use mesh_core::RepairProfile;
+use mesh_repair::BreakKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -208,7 +209,9 @@ impl DesktopApp {
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter(
                         "Supported Meshes",
-                        &["3mf", "stl", "obj", "ply", "amf", "gltf", "glb"],
+                        &[
+                            "3mf", "stl", "obj", "ply", "amf", "gltf", "glb", "svg", "step", "stp",
+                        ],
                     )
                     .add_filter("All Files", &["*"])
                     .pick_file()
@@ -263,6 +266,17 @@ impl DesktopApp {
             {
                 self.vm.start_repair();
             }
+
+            ui.add_enabled_ui(!self.vm.repair_in_flight, |ui| {
+                ui.menu_button("Break", |ui| {
+                    for kind in BreakKind::ALL {
+                        if ui.button(kind.label()).clicked() {
+                            self.vm.load_broken(kind);
+                            ui.close();
+                        }
+                    }
+                });
+            });
 
             let can_export = self.vm.after_mesh.is_some() && !self.vm.repair_in_flight;
             if ui
@@ -708,8 +722,10 @@ impl DesktopApp {
             ui.separator();
             ui.label(
                 RichText::new(
-                    "Current: 3MF paint preservation, STL, OBJ, PLY, AMF, glTF/GLB, Phase 1 and Phase 2 repairs.\n\
-                     Deferred: STEP and SVG. Thin walls are reported and left in place.",
+                    "Opens 3MF, STL, OBJ, PLY, AMF, glTF/GLB, simple SVG, and tessellated STEP.\n\
+                     Does not fix thin walls, large or bent holes, or ambiguous non-manifold edges.\n\
+                     Does not mesh analytic STEP solids or SVG curves, transforms, or holes.\n\
+                     Paint and materials are copied, never blended. The original file is never overwritten.",
                 )
                 .small()
                 .color(TEXT_MUTED),

@@ -3,6 +3,8 @@
 pub mod amf;
 pub mod gltf;
 pub mod ply;
+pub mod step;
+pub mod svg;
 pub mod threemf;
 
 use mesh_attributes::AttributeStore;
@@ -27,6 +29,8 @@ pub enum FormatKind {
     Amf,
     Gltf,
     Glb,
+    Svg,
+    Step,
 }
 
 /// Loaded mesh paired with any categorical attributes, optional 3MF package, and import warnings.
@@ -55,8 +59,10 @@ pub fn load_model(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, M
         "amf" => load_amf_path(path, limits),
         "gltf" => load_gltf_path(path, limits, FormatKind::Gltf),
         "glb" => load_gltf_path(path, limits, FormatKind::Glb),
+        "svg" => load_svg_path(path, limits),
+        "step" | "stp" => load_step_path(path, limits),
         other => Err(MeshError::UnsupportedFormat(format!(
-            "unsupported file extension '.{other}'; supported formats are .stl, .obj, .3mf, .ply, .amf, .gltf, and .glb"
+            "unsupported file extension '.{other}'; supported formats are .stl, .obj, .3mf, .ply, .amf, .gltf, .glb, .svg, .step, and .stp"
         ))),
     }
 }
@@ -184,6 +190,14 @@ pub fn save_model(
             write_glb_path(path, mesh, attributes)?;
             Ok(FormatKind::Glb)
         }
+        "svg" => Err(MeshError::UnsupportedFormat(
+            "SVG is import-only. Export the repaired mesh as .stl, .obj, .ply, .amf, .gltf, .glb, or .3mf."
+                .to_string(),
+        )),
+        "step" | "stp" => Err(MeshError::UnsupportedFormat(
+            "STEP is import-only. Export the repaired mesh as .stl, .obj, .ply, .amf, .gltf, .glb, or .3mf."
+                .to_string(),
+        )),
         "3mf" => Err(MeshError::UnsupportedFormat(
             "3MF export must use ThreeMfPackage::write_repaired_path to preserve package entries and painting."
                 .to_string(),
@@ -240,6 +254,20 @@ pub fn load_amf_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel
     let bytes = read_limited(path, limits)?;
     let (mesh, attributes) = amf::load_amf_slice(&bytes, limits)?;
     Ok(loaded_simple(mesh, attributes, FormatKind::Amf))
+}
+
+/// Load an SVG file from `path` and extrude each simple contour.
+pub fn load_svg_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = svg::load_svg_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Svg))
+}
+
+/// Load tessellated triangular faces from a STEP file at `path`.
+pub fn load_step_path(path: &Path, limits: &ResourceLimits) -> Result<LoadedModel, MeshError> {
+    let bytes = read_limited(path, limits)?;
+    let (mesh, attributes) = step::load_step_slice(&bytes, limits)?;
+    Ok(loaded_simple(mesh, attributes, FormatKind::Step))
 }
 
 /// Load a `.gltf` or `.glb` file from `path`.
@@ -1043,6 +1071,8 @@ mod extra_formats {
             let _ = ply::load_ply_slice(&bytes, &limits);
             let _ = amf::load_amf_slice(&bytes, &limits);
             let _ = gltf::load_gltf_slice(&bytes, &limits);
+            let _ = svg::load_svg_slice(&bytes, &limits);
+            let _ = step::load_step_slice(&bytes, &limits);
             let _ = load_stl_slice(&bytes, &limits);
         }
     }

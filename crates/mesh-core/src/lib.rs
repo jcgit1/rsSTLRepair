@@ -47,7 +47,7 @@ pub enum RepairProfile {
     Conservative,
     /// Automatically repair common defects, including small holes and simple non-manifold edges.
     Standard,
-    /// Wider hole caps and aggressive loose-fragment removal; may drop small details.
+    /// Wider hole caps, loose-fragment removal, and local remeshing. Remeshed faces can lose exact paint correspondence.
     Aggressive,
 }
 
